@@ -2,12 +2,17 @@
 VERSION = 0.8
 
 # Customize below to fit your system
-
-PREFIX = /usr/local
+OS = $(shell uname -s)
+PREFIX = ${HOME}/opt
 MANPREFIX = ${PREFIX}/share/man
 
 INCS = -I. -I/usr/include -I/usr/local/include
-LIBS = -lc -lutil -lncursesw
+ifeq ($(OS),Darwin)
+	LIBS = -lc -lutil -lncurses
+else
+	LIBS = -lc -lutil -lncursesw
+	STRIPFLAGS = -p
+endif
 # NetBSD
 #LIBS = -lc -lutil -lcurses
 # AIX
