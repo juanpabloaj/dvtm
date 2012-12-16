@@ -13,14 +13,10 @@
 #define _GNU_SOURCE
 #include <sys/stat.h>
 #include <sys/ioctl.h>
-#ifdef _AIX
-# include <fcntl.h>
-#else
-# include <sys/fcntl.h>
-#endif
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <curses.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -147,6 +143,7 @@ typedef struct {
 
 /* commands for use by keybindings */
 static void create(const char *args[]);
+static void copymode(const char *args[]);
 static void escapekey(const char *args[]);
 static void focusn(const char *args[]);
 static void focusnext(const char *args[]);
@@ -155,6 +152,7 @@ static void focusprev(const char *args[]);
 static void focusprevnm(const char *args[]);
 static void killclient(const char *args[]);
 static void lock(const char *key[]);
+static void paste(const char *args[]);
 static void quit(const char *args[]);
 static void redraw(const char *args[]);
 static void scrollback(const char *args[]);
@@ -192,6 +190,7 @@ static Layout *layout = layouts;
 static StatusBar bar = { -1, BAR_POS, 1 };
 static CmdFifo cmdfifo = { -1 };
 static const char *shell;
+static char *copybuf;
 static bool running = true;
 static bool runinall = false;
 
@@ -424,6 +423,12 @@ term_event_handler(Vt *term, int event, void *event_data) {
 		draw_border(c);
 		applycolorrules(c);
 		break;
+	case VT_EVENT_COPY_TEXT:
+		if (event_data) {
+			free(copybuf);
+			copybuf = event_data;
+		}
+		break;
 	}
 }
 
@@ -544,11 +549,12 @@ static void
 resize_screen() {
 	struct winsize ws;
 
-	if (ioctl(0, TIOCGWINSZ, &ws) == -1)
-		return;
-
-	screen.w = ws.ws_col;
-	screen.h = ws.ws_row;
+	if (ioctl(0, TIOCGWINSZ, &ws) == -1) {
+		getmaxyx(stdscr, screen.h, screen.w);
+	} else {
+		screen.w = ws.ws_col;
+		screen.h = ws.ws_row;
+	}
 
 	debug("resize_screen(), w: %d h: %d\n", screen.w, screen.h);
 
@@ -636,7 +642,6 @@ setup() {
 	mouse_setup();
 	raw();
 	vt_init();
-	getmaxyx(stdscr, screen.h, screen.w);
 	resize_screen();
 	signal(SIGWINCH, sigwinch_handler);
 	signal(SIGCHLD, sigchld_handler);
@@ -671,8 +676,11 @@ destroy(Client *c) {
 
 static void
 cleanup() {
+	while (clients)
+		destroy(clients);
 	vt_shutdown();
 	endwin();
+	free(copybuf);
 	if (bar.fd > 0)
 		close(bar.fd);
 	if (bar.file)
@@ -720,6 +728,17 @@ create(const char *args[]) {
 	attach(c);
 	focus(c);
 	arrange();
+}
+
+static void
+copymode(const char *args[]) {
+	if (!sel)
+		return;
+	vt_copymode_enter(sel->term);
+	if (args[0]) {
+		vt_copymode_keypress(sel->term, args[0][0]);
+		draw(sel);
+	}
 }
 
 static void
@@ -839,6 +858,12 @@ lock(const char *args[]) {
 	}
 
 	arrange();
+}
+
+static void
+paste(const char *args[]) {
+	if (sel && copybuf)
+		vt_write(sel->term, copybuf, strlen(copybuf));
 }
 
 static void
@@ -1341,6 +1366,9 @@ main(int argc, char *argv[]) {
 					}
 				} else if ((key = keybinding(0, code))) {
 					key->action.cmd(key->action.args);
+				} else if (sel && vt_copymode(sel->term)) {
+					vt_copymode_keypress(sel->term, code);
+					draw(sel);
 				} else {
 					keypress(code);
 				}
@@ -1356,7 +1384,7 @@ main(int argc, char *argv[]) {
 			handle_statusbar();
 
 		for (c = clients; c; ) {
-			if (FD_ISSET(c->pty, &rd)) {
+			if (FD_ISSET(c->pty, &rd) && !vt_copymode(c->term)) {
 				if (vt_process(c->term) < 0 && errno == EIO) {
 					/* client probably terminated */
 					t = c->next;
