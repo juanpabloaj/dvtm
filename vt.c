@@ -1694,7 +1694,6 @@ static void copymode_search(Vt *t, int direction)
 
 	Row *row = start_row, *matched_row = NULL;
 	int matched_col = 0;
-	int end_col = direction > 0 ? b->cols - 1 : 0;
 	int s_start = direction > 0 ? 0 : t->searchbuf_curs - 1;
 	int s_end = direction > 0 ? t->searchbuf_curs - 1 : 0;
 	int s = s_start;
@@ -1703,7 +1702,7 @@ static void copymode_search(Vt *t, int direction)
 		int col = direction > 0 ? 0 : b->cols - 1;
 		if (row == start_row)
 			col = start_col;
-		for (;;) {
+		for (; col >= 0 && col < b->cols; col += direction) {
 			if (t->searchbuf[s] == row->cells[col].text) {
 				if (s == s_start) {
 					matched_row = row;
@@ -1716,12 +1715,14 @@ static void copymode_search(Vt *t, int direction)
 					return;
 				}
 				s += direction;
+				int width = wcwidth(t->searchbuf[s]);
+				if (width < 0)
+					width = 0;
+				else if (width >= 1)
+					width--;
+				col += direction > 0 ? width : -width;
 			} else
 				s = s_start;
-
-			if (col == end_col)
-				break;
-			col += direction;
 		}
 
 		if ((row = buffer_next_row(b, row, direction)) == start_row)
@@ -1904,6 +1905,7 @@ void vt_copymode_keypress(Vt *t, int keycode)
 			return;
 		default:
 			for (int c = 0; c < (t->copymode_cmd_multiplier ? t->copymode_cmd_multiplier : 1); c++) {
+				int width;
 				switch (keycode) {
 				case 'w':
 				case 'W':
@@ -1975,7 +1977,8 @@ void vt_copymode_keypress(Vt *t, int keycode)
 					break;
 				case KEY_RIGHT:
 				case 'l':
-					b->curs_col++;
+					width = wcwidth(b->curs_row->cells[b->curs_col].text);
+					b->curs_col += width < 1 ? 1 : width;
 					if (b->curs_col >= b->cols) {
 						b->curs_col = b->cols - 1;
 						t->copymode_cmd_multiplier = 0;
@@ -1983,7 +1986,10 @@ void vt_copymode_keypress(Vt *t, int keycode)
 					break;
 				case KEY_LEFT:
 				case 'h':
-					b->curs_col--;
+					width = 1;
+					if (b->curs_col >= 2 && !b->curs_row->cells[b->curs_col-1].text)
+						width = wcwidth(b->curs_row->cells[b->curs_col-2].text);
+					b->curs_col -= width < 1 ? 1 : width;
 					if (b->curs_col < 0) {
 						b->curs_col = 0;
 						t->copymode_cmd_multiplier = 0;
