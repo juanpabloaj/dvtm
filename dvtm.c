@@ -1,11 +1,12 @@
 /*
  * The initial "port" of dwm to curses was done by
- * (c) 2007-2012 Marc Andre Tanner <mat at brain-dump dot org>
+ *
+ * © 2007-2013 Marc André Tanner <mat at brain-dump dot org>
  *
  * It is highly inspired by the original X11 dwm and
  * reuses some code of it which is mostly
  *
- * (c) 2006-2007 Anselm R. Garbe <garbeam at gmail dot com>
+ * © 2006-2007 Anselm R. Garbe <garbeam at gmail dot com>
  *
  * See LICENSE for details.
  */
@@ -40,7 +41,7 @@ int ESCDELAY;
 #endif
 
 typedef struct {
-	double mfact;
+	float mfact;
 	int history;
 	int w;
 	int h;
@@ -57,8 +58,8 @@ struct Client {
 	WINDOW *window;
 	Vt *term;
 	const char *cmd;
-	char title[256];
-	uint8_t order;
+	char title[255];
+	int order;
 	pid_t pid;
 	int pty;
 	unsigned short int id;
@@ -88,13 +89,13 @@ typedef struct {
 #endif
 #define CTRL_ALT(k) ((k) + (129 - 'a'))
 
-#define MAX_ARGS 2
+#define MAX_ARGS 3
 
 typedef struct {
 	void (*cmd)(const char *args[]);
 	/* needed to avoid an error about initialization
 	 * of nested flexible array members */
-	const char *args[MAX_ARGS + 1];
+	const char *args[MAX_ARGS];
 } Action;
 
 typedef struct {
@@ -177,6 +178,7 @@ static void resize(Client *c, int x, int y, int w, int h);
 extern Screen screen;
 static unsigned int waw, wah, wax, way;
 static Client *clients = NULL;
+static char *title;
 #define COLOR(fg, bg) COLOR_PAIR(vt_color_reserve(fg, bg))
 
 #include "config.h"
@@ -191,7 +193,7 @@ static StatusBar bar = { -1, BAR_POS, 1 };
 static CmdFifo cmdfifo = { -1 };
 static const char *shell;
 static char *copybuf;
-static bool running = true;
+static volatile sig_atomic_t running = true;
 static bool runinall = false;
 
 static void
@@ -333,19 +335,17 @@ arrange() {
 
 static void
 attach(Client *c) {
-	uint8_t order;
 	if (clients)
 		clients->prev = c;
 	c->next = clients;
 	c->prev = NULL;
 	clients = c;
-	for (order = 1; c; c = c->next, order++)
-		c->order = order;
+	for (int o = 1; c; c = c->next, o++)
+		c->order = o;
 }
 
 static void
 attachafter(Client *c, Client *a) { /* attach c after a */
-	uint8_t o;
 	if (c == a)
 		return;
 	if (!a)
@@ -357,7 +357,7 @@ attachafter(Client *c, Client *a) { /* attach c after a */
 		c->next = a->next;
 		c->prev = a;
 		a->next = c;
-		for (o = a->order; c; c = c->next)
+		for (int o = a->order; c; c = c->next)
 			c->order = ++o;
 	}
 }
@@ -378,11 +378,21 @@ detach(Client *c) {
 }
 
 static void
+settitle(Client *c) {
+	char *t = title;
+	if (!t && sel == c && *c->title)
+		t = c->title;
+	if (t)
+		printf("\033]0;%s\007", t);
+}
+
+static void
 focus(Client *c) {
 	Client *tmp = sel;
 	if (sel == c)
 		return;
 	sel = c;
+	settitle(c);
 	if (tmp) {
 		draw_border(tmp);
 		wrefresh(tmp->window);
@@ -420,6 +430,7 @@ term_event_handler(Vt *term, int event, void *event_data) {
 		if (event_data)
 			strncpy(c->title, event_data, sizeof(c->title) - 1);
 		c->title[event_data ? sizeof(c->title) - 1 : 0] = '\0';
+		settitle(c);
 		draw_border(c);
 		applycolorrules(c);
 		break;
@@ -512,14 +523,11 @@ sigchld_handler(int sig) {
 			c->died = true;
 	}
 
-	signal(SIGCHLD, sigchld_handler);
-
 	errno = errsv;
 }
 
 static void
 sigwinch_handler(int sig) {
-	signal(SIGWINCH, sigwinch_handler);
 	screen.need_resize = true;
 }
 
@@ -642,10 +650,17 @@ setup() {
 	mouse_setup();
 	raw();
 	vt_init();
+	vt_set_keytable(keytable, countof(keytable));
 	resize_screen();
-	signal(SIGWINCH, sigwinch_handler);
-	signal(SIGCHLD, sigchld_handler);
-	signal(SIGTERM, sigterm_handler);
+	struct sigaction sa;
+	sa.sa_flags = 0;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_handler = sigwinch_handler;
+	sigaction(SIGWINCH, &sa, NULL);
+	sa.sa_handler = sigchld_handler;
+	sigaction(SIGCHLD, &sa, NULL);
+	sa.sa_handler = sigterm_handler;
+	sigaction(SIGTERM, &sa, NULL);
 }
 
 static void
@@ -691,6 +706,14 @@ cleanup() {
 		unlink(cmdfifo.file);
 }
 
+static char *getcwd_by_pid(Client *c) {
+	if (!c)
+		return NULL;
+	char buf[32];
+	snprintf(buf, sizeof buf, "/proc/%d/cwd", c->pid);
+	return realpath(buf, NULL);
+}
+
 /* commands for use by keybindings */
 static void
 create(const char *args[]) {
@@ -700,7 +723,7 @@ create(const char *args[]) {
 	const char *cmd = (args && args[0]) ? args[0] : shell;
 	const char *pargs[] = { "/bin/sh", "-c", cmd, NULL };
 	c->id = ++cmdfifo.id;
-	char buf[8];
+	char buf[8], *cwd = NULL;
 	snprintf(buf, sizeof buf, "%d", c->id);
 	const char *env[] = {
 		"DVTM", VERSION,
@@ -708,14 +731,27 @@ create(const char *args[]) {
 		NULL
 	};
 
-	c->window = newwin(wah, waw, way, wax);
-	c->term = vt_create(screen.h - 1, screen.w, screen.history);
+	if (!(c->window = newwin(wah, waw, way, wax))) {
+		free(c);
+		return;
+	}
+
+	if (!(c->term = vt_create(screen.h - 1, screen.w, screen.history))) {
+		delwin(c->window);
+		free(c);
+		return;
+	}
+
 	c->cmd = cmd;
 	if (args && args[1]) {
 		strncpy(c->title, args[1], sizeof(c->title) - 1);
 		c->title[sizeof(c->title) - 1] = '\0';
 	}
-	c->pid = vt_forkpty(c->term, "/bin/sh", pargs, env, &c->pty);
+	if (args && args[2])
+		cwd = !strcmp(args[2], "$CWD") ? getcwd_by_pid(sel) : (char*)args[2];
+	c->pid = vt_forkpty(c->term, "/bin/sh", pargs, cwd, env, &c->pty);
+	if (args && args[2] && !strcmp(args[2], "$CWD"))
+		free(cwd);
 	vt_set_data(c->term, c);
 	vt_set_event_handler(c->term, term_event_handler);
 	c->w = screen.w;
@@ -913,14 +949,14 @@ setlayout(const char *args[]) {
 
 static void
 setmfact(const char *args[]) {
-	double delta;
+	float delta;
 
 	if (isarrange(fullscreen) || isarrange(grid))
 		return;
 	/* arg handling, manipulate mfact */
 	if (args[0] == NULL)
 		screen.mfact = MFACT;
-	else if (1 == sscanf(args[0], "%lf", &delta)) {
+	else if (1 == sscanf(args[0], "%f", &delta)) {
 		if (args[0][0] == '+' || args[0][0] == '-')
 			screen.mfact += delta;
 		else
@@ -1085,7 +1121,7 @@ handle_cmdfifo() {
 				bool quote = false;
 				int argc = 0;
 				/* XXX: initializer assumes MAX_ARGS == 2 use a initialization loop? */
-				const char *args[MAX_ARGS] = { NULL, NULL}, *arg;
+				const char *args[MAX_ARGS] = { NULL, NULL, NULL}, *arg;
 				/* if arguments were specified in config.h ignore the one given via
 				 * the named pipe and thus skip everything until we find a new line
 				 */
@@ -1230,10 +1266,8 @@ open_or_create_fifo(const char *name, const char **name_created) {
 static void
 usage() {
 	cleanup();
-	eprint("usage: dvtm [-v] [-m mod] [-d escdelay] [-h n] "
-		"[-s status-fifo] "
-		"[-c cmd-fifo] "
-		"[cmd...]\n");
+	eprint("usage: dvtm [-v] [-M] [-m mod] [-d delay] [-h lines] [-t title] "
+	       "[-s status-fifo] [-c cmd-fifo] [cmd...]\n");
 	exit(EXIT_FAILURE);
 }
 
@@ -1254,12 +1288,15 @@ parse_args(int argc, char *argv[]) {
 			create(args);
 			continue;
 		}
-		if (argv[arg][1] != 'v' && (arg + 1) >= argc)
+		if (argv[arg][1] != 'v' && argv[arg][1] != 'M' && (arg + 1) >= argc)
 			usage();
 		switch (argv[arg][1]) {
 			case 'v':
-				puts("dvtm-"VERSION" (c) 2007-2012 Marc Andre Tanner");
+				puts("dvtm-"VERSION" © 2007-2013 Marc André Tanner");
 				exit(EXIT_SUCCESS);
+			case 'M':
+				mouse_events_enabled = !mouse_events_enabled;
+				break;
 			case 'm': {
 				char *mod = argv[++arg];
 				if (mod[0] == '^' && mod[1])
@@ -1277,6 +1314,9 @@ parse_args(int argc, char *argv[]) {
 				break;
 			case 'h':
 				screen.history = atoi(argv[++arg]);
+				break;
+			case 't':
+				title = argv[++arg];
 				break;
 			case 's':
 				bar.fd = open_or_create_fifo(argv[++arg], &bar.file);

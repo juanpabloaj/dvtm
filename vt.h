@@ -1,7 +1,7 @@
 /*
  * Copyright © 2004 Bruno T. C. de Oliveira
  * Copyright © 2006 Pierre Habouzit
- * Copyright © 2008-2012 Marc Andre Tanner
+ * Copyright © 2008-2013 Marc André Tanner
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -61,6 +61,7 @@ enum {
 typedef void (*vt_event_handler_t)(Vt *, int event, void *data);
 
 void vt_init(void);
+void vt_set_keytable(char const * const keytable_overlay[], int count);
 void vt_shutdown(void);
 void vt_set_escseq_handler(Vt *, vt_escseq_handler_t);
 void vt_set_event_handler(Vt *, vt_event_handler_t);
@@ -71,7 +72,7 @@ void vt_set_default_colors(Vt *, unsigned attrs, short fg, short bg);
 Vt *vt_create(int rows, int cols, int scroll_buf_sz);
 void vt_resize(Vt *, int rows, int cols);
 void vt_destroy(Vt *);
-pid_t vt_forkpty(Vt *, const char *, const char *argv[], const char *envp[], int *pty);
+pid_t vt_forkpty(Vt *, const char *, const char *argv[], const char *cwd, const char *envp[], int *pty);
 int vt_getpty(Vt *);
 unsigned vt_cursor(Vt *t);
 

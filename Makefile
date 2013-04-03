@@ -11,6 +11,9 @@ options:
 	@echo "LDFLAGS  = ${LDFLAGS}"
 	@echo "CC       = ${CC}"
 
+config.h:
+	cp config.def.h config.h
+
 .c.o:
 	@echo CC $<
 	@${CC} -c ${CFLAGS} $<
@@ -31,9 +34,9 @@ clean:
 dist: clean
 	@echo creating dist tarball
 	@mkdir -p dvtm-${VERSION}
-	@cp -R LICENSE Makefile README config.h config.mk \
+	@cp -R LICENSE Makefile README config.def.h config.mk \
 		${SRC} vt.h forkpty-aix.c tile.c bstack.c tstack.c grid.c fullscreen.c \
-		fibonacci.c dvtm-status dvtm.1 dvtm-${VERSION}
+		fibonacci.c dvtm-status dvtm.info dvtm.1 dvtm-${VERSION}
 	@tar -cf dvtm-${VERSION}.tar dvtm-${VERSION}
 	@gzip dvtm-${VERSION}.tar
 	@rm -rf dvtm-${VERSION}
@@ -51,6 +54,8 @@ install: dvtm
 	@mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	@sed "s/VERSION/${VERSION}/g" < dvtm.1 > ${DESTDIR}${MANPREFIX}/man1/dvtm.1
 	@chmod 644 ${DESTDIR}${MANPREFIX}/man1/dvtm.1
+	@echo installing terminfo description
+	@tic -s dvtm.info
 
 uninstall:
 	@echo removing executable file from ${DESTDIR}${PREFIX}/bin

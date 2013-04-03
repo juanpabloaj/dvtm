@@ -1,5 +1,5 @@
 # dvtm version
-VERSION = 0.8
+VERSION = 0.9
 
 # Customize below to fit your system
 OS = $(shell uname -s)
@@ -23,6 +23,6 @@ endif
 CFLAGS += -std=c99 -Os ${INCS} -DVERSION=\"${VERSION}\" -DNDEBUG
 LDFLAGS += -L/usr/lib -L/usr/local/lib ${LIBS}
 
-DEBUG_CFLAGS = ${CFLAGS} -UNDEBUG -O0 -g -ggdb -Wall
+DEBUG_CFLAGS = ${CFLAGS} -UNDEBUG -O0 -g -ggdb -Wall -Wextra -Wno-missing-field-initializers -Wno-unused-parameter
 
 CC = cc
